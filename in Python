@@ -1,0 +1,491 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.genmod.generalized_linear_model import GLM
+from statsmodels.genmod import families
+from statsmodels.graphics.gofplots import qqplot
+from statsmodels.stats.outliers_influence import OLSInfluence
+from patsy import dmatrices
+
+# --- Read Dataset ---
+data_path = '/Users/tingly/Desktop/Data Analytics w Python/Assignments/Assigment10/heart_2020_cleaned copy.csv'
+data = pd.read_csv(data_path)
+
+# Preliminary data inspection
+print(data.head())
+
+# --- Data Cleaning ---
+# --- Verify and Update Column Names ---
+print("Current DataFrame columns:", data.columns.tolist())
+
+categorical_predictors = [
+    col for col in ["Smoking", "AlcoholDrinking", "Stroke", "DiffWalking", 
+                    "AgeCategory", "Race", "Diabetic", "PhysicalActivity", 
+                    "GenHealth", "Asthma", "KidneyDisease", "SkinCancer"] 
+    if col in data.columns
+]
+
+print("Categorical predictors to be used:", categorical_predictors)
+
+# Remove rows with any NA or missing values
+data.dropna(inplace=True)
+
+# --- Data Preparation ---
+# Efficient conversion of categorical variables
+data['HeartDiseaseNumeric'] = (data['HeartDisease'] == 'Yes').astype(int)
+data['Sex'] = (data['Sex'] == 'Male').astype(int)  # Converts Sex to binary (Male: 1, Female: 0)
+
+# Create dummy variables for categorical predictors and remove first dummy
+categorical_predictors = ["Smoking", "AlcoholDrinking", "Stroke", "DiffWalking", 
+                          "AgeCategory", "Race", "Diabetic", "PhysicalActivity", 
+                          "GenHealth", "Asthma", "KidneyDisease", "SkinCancer"]
+data = pd.get_dummies(data, columns=categorical_predictors, drop_first=True)
+
+# Reconstructing the original 'AgeCategory' column
+age_categories = ['AgeCategory_25-29', 'AgeCategory_30-34', 'AgeCategory_35-39',
+                  'AgeCategory_40-44', 'AgeCategory_45-49', 'AgeCategory_50-54',
+                  'AgeCategory_55-59', 'AgeCategory_60-64', 'AgeCategory_65-69',
+                  'AgeCategory_70-74', 'AgeCategory_75-79', 'AgeCategory_80 or older']
+
+# Assuming each row only belongs to one age category
+data['AgeCategory'] = (data[age_categories] == 1).idxmax(axis=1)
+data['AgeCategory'] = data['AgeCategory'].str.replace('AgeCategory_', '')
+
+# Define the order of age categories as they should appear
+age_order = ['25-29', '30-34', '35-39', '40-44', '45-49', '50-54', 
+             '55-59', '60-64', '65-69', '70-74', '75-79', '80 or older']
+
+# Convert to a categorical column with specified order
+data['AgeCategory'] = pd.Categorical(data['AgeCategory'], categories=age_order, ordered=True)
+
+# Reconstructing the original 'Race' column
+race_categories = ['Race_Asian', 'Race_Black', 'Race_Hispanic', 'Race_Other', 'Race_White']
+
+# Assuming each row only belongs to one race category
+data['Race'] = (data[race_categories] == 1).idxmax(axis=1).str.replace('Race_', '')
+
+# Calculate counts for each race
+race_counts = data['Race'].value_counts()
+
+# Get races in order from lowest count to highest count
+race_order = race_counts.sort_values().index.tolist()
+
+# Convert 'Race' column to a categorical column with the specified order
+data['Race'] = pd.Categorical(data['Race'], categories=race_order, ordered=True)
+
+# Define the GenHealth category columns
+genhealth_categories = ['GenHealth_Fair', 'GenHealth_Good', 'GenHealth_Poor', 'GenHealth_Very good']
+
+# Assuming each row only belongs to one GenHealth category
+data['GenHealth'] = (data[genhealth_categories] == 1).idxmax(axis=1).str.replace('GenHealth_', '')
+
+# Define the order of GenHealth categories from 'Poor' to 'Very good'
+genhealth_order = ['Poor', 'Fair', 'Good', 'Very good']
+
+# Convert 'GenHealth' column to a categorical column with the specified order
+data['GenHealth'] = pd.Categorical(data['GenHealth'], categories=genhealth_order, ordered=True)
+
+# Reconstructing the columns for Other Predictors from dummy variables
+data['Smoking'] = data['Smoking_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['AlcoholDrinking'] = data['AlcoholDrinking_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['Stroke'] = data['Stroke_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['DiffWalking'] = data['DiffWalking_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['Diabetic'] = data['Diabetic_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['PhysicalActivity'] = data['PhysicalActivity_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['Asthma'] = data['Asthma_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['KidneyDisease'] = data['KidneyDisease_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['SkinCancer'] = data['SkinCancer_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+
+# Check if 'HeartDisease' is present in the dataframe
+print(data.head())
+
+import pandas as pd
+import numpy as np
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from patsy import dmatrices
+
+# --- Check for Missing or Infinite Values ---
+def count_na_inf(series):
+    is_numeric = pd.api.types.is_numeric_dtype(series)
+    return pd.Series({
+        'na': series.isna().sum(),
+        'inf': np.isinf(series).sum() if is_numeric else None
+    })
+
+data_check = data.apply(count_na_inf)
+print("Missing and Infinite Values Check:")
+print(data_check)
+
+# --- Model Building ---
+# Correctly handle column names with spaces or special characters
+predictor_columns = data.drop('HeartDiseaseNumeric', axis=1).columns
+predictor_formula = ' + '.join([f"Q('{col}')" for col in predictor_columns])
+formula = f"HeartDiseaseNumeric ~ {predictor_formula}"
+
+# Fit the logistic regression model
+full_model = smf.glm(formula, data=data, family=sm.families.Binomial()).fit()
+print("\nLogistic Regression Model Summary:")
+print(full_model.summary())
+
+# --- Coefficient Analysis ---
+# Extract coefficients from the model
+coefficients = pd.DataFrame({'Term': full_model.params.index, 'Coefficient': full_model.params.values})
+
+# Exclude the intercept
+coefficients = coefficients[coefficients['Term'] != 'Intercept']
+
+# Streamline coefficient processing
+# Replace terms for Sex variables
+def replace_term(term):
+    if 'Sex[T.Male]' in term:
+        return 'Male'
+    elif 'Sex[T.Female]' in term:
+        return 'Female'
+    else:
+        return term
+
+coefficients['Term'] = coefficients['Term'].apply(replace_term)
+
+print(coefficients)
+print("\nProcessed Coefficients:")
+print(coefficients)
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# --- Plotting ---
+def plot_histogram(data, variable, title):
+    # Check if the variable exists in the data
+    if variable not in data.columns:
+        raise ValueError(f"The variable {variable} is not found in the dataframe")
+
+    # Check if the variable is numeric or categorical
+    if pd.api.types.is_numeric_dtype(data[variable]):
+        # Plot histogram for numeric variables
+        plt.figure(figsize=(10, 6))
+        sns.histplot(data[variable], bins=30, kde=False, color='darkorchid')
+        plt.title(title)
+        plt.xlabel(variable)
+        plt.ylabel('Count')
+    else:
+        # Plot bar plot for categorical variables
+        plt.figure(figsize=(10, 6))
+        sns.countplot(data=data, x=variable, palette='viridis')
+        plt.title(title)
+        plt.xlabel(variable)
+        plt.ylabel('Count')
+        plt.xticks(rotation=65)
+
+    plt.show()
+
+# Check DataFrame columns
+print(data.columns)
+
+# Reconstructing the original 'AgeCategory' column
+age_categories = ['AgeCategory_25-29', 'AgeCategory_30-34', 'AgeCategory_35-39',
+                  'AgeCategory_40-44', 'AgeCategory_45-49', 'AgeCategory_50-54',
+                  'AgeCategory_55-59', 'AgeCategory_60-64', 'AgeCategory_65-69',
+                  'AgeCategory_70-74', 'AgeCategory_75-79', 'AgeCategory_80 or older']
+
+# Assuming each row only belongs to one age category
+data['AgeCategory'] = (data[age_categories] == 1).idxmax(axis=1)
+data['AgeCategory'] = data['AgeCategory'].str.replace('AgeCategory_', '')
+
+# Define the order of age categories as they should appear
+age_order = ['25-29', '30-34', '35-39', '40-44', '45-49', '50-54', 
+             '55-59', '60-64', '65-69', '70-74', '75-79', '80 or older']
+
+# Convert to a categorical column with specified order
+data['AgeCategory'] = pd.Categorical(data['AgeCategory'], categories=age_order, ordered=True)
+
+# Reconstructing the original 'Race' column
+race_categories = ['Race_Asian', 'Race_Black', 'Race_Hispanic', 'Race_Other', 'Race_White']
+
+# Assuming each row only belongs to one race category
+data['Race'] = (data[race_categories] == 1).idxmax(axis=1).str.replace('Race_', '')
+
+# Calculate counts for each race
+race_counts = data['Race'].value_counts()
+
+# Get races in order from lowest count to highest count
+race_order = race_counts.sort_values().index.tolist()
+
+# Convert 'Race' column to a categorical column with the specified order
+data['Race'] = pd.Categorical(data['Race'], categories=race_order, ordered=True)
+
+# Define the GenHealth category columns
+genhealth_categories = ['GenHealth_Fair', 'GenHealth_Good', 'GenHealth_Poor', 'GenHealth_Very good']
+
+# Assuming each row only belongs to one GenHealth category
+data['GenHealth'] = (data[genhealth_categories] == 1).idxmax(axis=1).str.replace('GenHealth_', '')
+
+# Define the order of GenHealth categories from 'Poor' to 'Very good'
+genhealth_order = ['Poor', 'Fair', 'Good', 'Very good']
+
+# Convert 'GenHealth' column to a categorical column with the specified order
+data['GenHealth'] = pd.Categorical(data['GenHealth'], categories=genhealth_order, ordered=True)
+
+# Reconstructing the columns for Other Predictors from dummy variables
+data['Smoking'] = data['Smoking_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['AlcoholDrinking'] = data['AlcoholDrinking_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['Stroke'] = data['Stroke_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['DiffWalking'] = data['DiffWalking_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['Diabetic'] = data['Diabetic_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['PhysicalActivity'] = data['PhysicalActivity_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['Asthma'] = data['Asthma_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['KidneyDisease'] = data['KidneyDisease_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+data['SkinCancer'] = data['SkinCancer_Yes'].apply(lambda x: 'Yes' if x == 1 else 'No')
+
+# Replace 'AgeCategory', 'Sex', etc. with actual column names in your DataFrame
+plot_histogram(data, "AgeCategory", "Age Category")
+plot_histogram(data, "Sex", "Sex")
+plot_histogram(data, "Race", "Race")
+plot_histogram(data, "GenHealth", "General Health")
+
+# List of other predictors
+other_predictors = ["BMI", "Smoking", "AlcoholDrinking", "Stroke", "PhysicalHealth", 
+                    "MentalHealth", "DiffWalking", "Diabetic", "PhysicalActivity", 
+                    "SleepTime", "Asthma", "KidneyDisease", "SkinCancer"]
+
+# Apply the histogram plot function to each of the predictors
+for predictor in other_predictors:
+    if predictor in data.columns:
+        plot_histogram(data, predictor, predictor)
+    else:
+        print(f"The variable {predictor} is not found in the dataframe. Skipping.")
+
+# --- Descriptive Statistics and Exploratory Graphs ---
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+# --- Histogram Function ---
+def plot_histogram(data, variable, title):
+    if variable not in data.columns:
+        raise ValueError(f"The variable {variable} is not found in the dataframe")
+
+    if pd.api.types.is_numeric_dtype(data[variable]):
+        # Plot histogram for numeric variables
+        plt.figure(figsize=(10, 6))
+        sns.histplot(data[variable], bins=30, kde=False, color='darkorchid')
+        plt.axvline(x=data[variable].mean(), color='darkorange', linestyle='dashed', linewidth=1)
+        plt.title(f"Histogram of {title}")
+        plt.xlabel(title)
+        plt.ylabel('Count')
+    else:
+        # Plot bar plot for categorical variables
+        plt.figure(figsize=(10, 6))
+        sns.countplot(data=data, x=variable, palette='viridis')
+        plt.title(f"Bar Plot of {title}")
+        plt.xlabel(title)
+        plt.ylabel('Count')
+
+    plt.show()
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# --- Data Cleaning ---
+
+# Impute missing values for BMI with mean
+data['BMI'] = data['BMI'].fillna(data['BMI'].mean())
+
+# Convert categorical variables to appropriate data types
+data['Sex'] = data['Sex'].astype('category')
+data['Race'] = data['Race'].astype('category')
+data['GenHealth'] = data['GenHealth'].astype('category')
+data['AgeCategory'] = data['AgeCategory'].astype('category')
+
+# --- Transformations ---
+
+# Apply log transformation to BMI
+data['BMI_log'] = np.log(data['BMI'] + 1)
+
+# --- Descriptive Statistics for Numeric Variables ---
+
+# Select numeric columns and calculate summary statistics
+numeric_columns = data.select_dtypes(include=[np.number]).columns
+summary_statistics = data[numeric_columns].agg(['mean', 'std', 'median', 'min', 'max'])
+print(summary_statistics)
+
+# --- Exploratory Graphs for Categorical Variables ---
+
+# Heart Disease by Age and Sex
+plt.figure(figsize=(10, 6))
+sns.barplot(x='AgeCategory', y='HeartDiseaseNumeric', hue='Sex', data=data, estimator=np.mean)
+plt.title('Heart Disease by Age and Sex')
+plt.xlabel('Age Category')
+plt.ylabel('Proportion with Heart Disease')
+plt.show()
+
+# --- Correlation Heatmap ---
+
+# Create a correlation matrix from numeric data
+plt.figure(figsize=(15, 15))
+numeric_data = data.select_dtypes(include=[np.number])
+correlation_matrix = numeric_data.corr()
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt=".2f", linewidths=.5)
+plt.title('Correlation Matrix of Numeric Predictors')
+plt.show()
+
+import pandas as pd
+import statsmodels.api as sm
+from patsy import dmatrices
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+# --- Regression Modeling ---
+# Define control variables
+control_variables = ["AgeCategory", "Sex", "Race", "GenHealth"]
+
+# Define independent variables of interest
+independent_variables = ["BMI_log", "Smoking", "AlcoholDrinking", "Stroke", "PhysicalHealth", 
+                         "MentalHealth", "DiffWalking", "Diabetic", "PhysicalActivity", 
+                         "SleepTime", "Asthma", "KidneyDisease", "SkinCancer"]
+
+# Model 1: Heart Disease with only control variables
+control_formula = 'HeartDiseaseNumeric ~ ' + ' + '.join(control_variables)
+y_control, X_control = dmatrices(control_formula, data=data, return_type='dataframe')
+model_control = sm.GLM(y_control, X_control, family=sm.families.Binomial()).fit()
+print(model_control.summary())
+
+# Model 2: Heart Disease with control variables and independent variables
+full_formula = 'HeartDiseaseNumeric ~ ' + ' + '.join(control_variables + independent_variables)
+y_full, X_full = dmatrices(full_formula, data=data, return_type='dataframe')
+model_full = sm.GLM(y_full, X_full, family=sm.families.Binomial()).fit()
+print(model_full.summary())
+
+# Model Diagnostics: Check for multicollinearity
+vif_data = pd.DataFrame()
+vif_data["feature"] = X_full.columns
+vif_data["VIF"] = [variance_inflation_factor(X_full.values, i) for i in range(len(X_full.columns))]
+print(vif_data)
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+import statsmodels.api as sm
+from statsmodels.graphics.gofplots import qqplot
+from statsmodels.stats.outliers_influence import OLSInfluence
+import numpy as np
+from scipy.stats import chi2
+
+
+# --- Function Definitions ---
+
+def perform_model_comparison(model_control, model_full):
+    """Performs a model comparison using likelihood ratio test."""
+    # Compute the test statistic manually
+    lr_stat = 2 * (model_full.llf - model_control.llf)
+    # Degrees of freedom
+    df_diff = model_full.df_model - model_control.df_model
+    # Compute the p-value using chi-squared distribution
+    p_value = chi2.sf(lr_stat, df_diff)
+
+    print(f"Likelihood Ratio Test:\nChi-Squared: {lr_stat}, P-value: {p_value}, df_diff: {df_diff}")
+
+def report_model_goodness_of_fit(model_control, model_full):
+    """Reports the AIC for model comparison."""
+    print(f"Model 1 (Control Variables) AIC: {model_control.aic}")
+    print(f"Model 2 (Full Model) AIC: {model_full.aic}")
+    print("\nSummary of Model 1 (Control Variables):")
+    print(model_control.summary())
+    print("\nSummary of Model 2 (Full Model):")
+    print(model_full.summary())
+
+def plot_diagnostics(model):
+    """Plots diagnostic graphs for a given model."""
+    fitted_values = model.fittedvalues
+    residuals = model.resid_pearson
+
+    # Residuals vs Fitted plot
+    plt.figure(figsize=(10, 8))
+    sns.residplot(x=fitted_values, y=residuals, lowess=True, line_kws={'color': 'orange', 'lw': 1})
+    plt.axhline(y=0, color='purple', linestyle='--')
+    plt.xlabel('Fitted values')
+    plt.ylabel('Residuals')
+    plt.title('Residuals vs Fitted')
+    plt.show()
+
+    # QQ plot
+    plt.figure()
+    qqplot_data = qqplot(residuals, line='45', fit=True)
+    plt.title('Normal Q-Q')
+    plt.show()
+
+    # Scale-Location plot
+    plt.figure(figsize=(10, 8))
+    sns.residplot(x=fitted_values, y=np.sqrt(np.abs(residuals)), lowess=True, line_kws={'color': 'orange', 'lw': 1})
+    plt.xlabel('Fitted values')
+    plt.ylabel('Sqrt(|Residuals|)')
+    plt.title('Scale-Location')
+    plt.show()
+
+    # Residuals vs Leverage plot
+    influence = OLSInfluence(model)
+    leverage = influence.hat_matrix_diag
+    plt.figure(figsize=(10, 8))
+    sns.scatterplot(x=leverage, y=residuals)
+    plt.xlabel('Leverage')
+    plt.ylabel('Residuals')
+    plt.title('Residuals vs Leverage')
+    plt.axhline(y=0, color='purple', linestyle='--')
+    plt.show()
+
+# --- Analysis Execution ---
+
+# Perform Model Comparison
+perform_model_comparison(model_control, model_full)
+
+# Report Model Goodness of Fit
+report_model_goodness_of_fit(model_control, model_full)
+
+# Plot Diagnostics for the Full Model
+plot_diagnostics(model_full)
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+
+# --- Machine Learning: Logistic Regression ---
+
+# Drop the original categorical columns to avoid duplication
+data_ml = data.drop(['AgeCategory', 'Race', 'GenHealth', 'Smoking', 'AlcoholDrinking', 
+                     'Stroke', 'DiffWalking', 'Diabetic', 'PhysicalActivity', 'Asthma', 
+                     'KidneyDisease', 'SkinCancer'], axis=1)
+
+# Define the target variable and features
+target = data_ml['HeartDiseaseNumeric']
+features = data_ml.drop(['HeartDiseaseNumeric', 'HeartDisease'], axis=1)
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+
+# Initialize the logistic regression model
+logreg = LogisticRegression(max_iter=1000)
+
+# Train the model
+logreg.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = logreg.predict(X_test)
+
+# Evaluate the model
+accuracy = accuracy_score(y_test, y_pred)
+conf_matrix = confusion_matrix(y_test, y_pred)
+class_report = classification_report(y_test, y_pred)
+
+print("Model Accuracy:", accuracy)
+print("Confusion Matrix:\n", conf_matrix)
+print("Classification Report:\n", class_report)
