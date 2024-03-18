@@ -1,0 +1,318 @@
+# --- Term Project: Logistic Regression Model---
+# Load libraries
+library(tidyverse)
+library(broom)
+library(fastDummies)
+library(stargazer)
+library(AER)
+
+# --- Data Loading and Preliminary Checking ---
+# Load the data set 
+data_path <- "/Users/tingly/Desktop/Econometrics w R/Group Presentation /Indicators of Heart Disease/2020/heart_2020_cleaned.csv"
+data <- read_csv(data_path)
+
+# Use glimpse for a comprehensive structure view
+glimpse(data)
+
+# --- Data Cleaning ---
+# Remove rows with any NA or missing values
+data <- na.omit(data)
+
+# --- Data Preparation ---
+# Efficient conversion of categorical variables
+data <- data %>%
+  mutate(
+    HeartDiseaseNumeric = as.numeric(HeartDisease == "Yes"),
+    across(c(Sex), ~as.integer(. == "Male"))  # Converts Sex to binary (Male: 1, Female: 0)
+  )
+
+# Create dummy variables for categorical predictors and remove first dummy
+categorical_predictors <- c("Smoking", "AlcoholDrinking", "Stroke", "DiffWalking", 
+                            "AgeCategory", "Race", "Diabetic", "PhysicalActivity", 
+                            "GenHealth", "Asthma", "KidneyDisease", "SkinCancer")
+data <- dummy_cols(data, select_columns = categorical_predictors, remove_first_dummy = TRUE)
+
+# Remove unnecessary columns
+data <- dplyr::select(data, -all_of(categorical_predictors), -HeartDisease)
+
+# Function to reconstruct a category from dummies
+reconstruct_category <- function(data, prefix, categories) {
+  apply(data[, grepl(paste0(prefix, "_"), names(data))], 1, function(x) {
+    category <- categories[which(x == 1)]
+    if (length(category) != 1) {
+      warning("Multiple or no matches found for a row in", prefix, ".")
+      return(NA)
+    }
+    return(category)
+  })
+}
+
+# Use the function to reconstruct categories
+data$AgeCategory <- reconstruct_category(data, "AgeCategory", c("25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59", "60-64", "65-69", "70-74", "75-79", "80 or older"))
+data$Race <- reconstruct_category(data, "Race", c("Asian", "Black", "Hispanic", "Other", "White"))
+data$GenHealth <- reconstruct_category(data, "GenHealth", c("Very Good", "Good", "Fair", "Poor"))
+
+# Reconstructing the columns for Other Predictors from dummy variables
+data$Smoking <- ifelse(data$Smoking_Yes == 1, "Yes", "No")
+data$AlcoholDrinking <- ifelse(data$AlcoholDrinking_Yes == 1, "Yes", "No")
+data$Stroke <- ifelse(data$Stroke_Yes == 1, "Yes", "No")
+data$DiffWalking <- ifelse(data$DiffWalking_Yes == 1, "Yes", "No")
+data$Diabetic <- ifelse(data$Diabetic_Yes == 1, "Yes", "No")
+data$PhysicalActivity <- ifelse(data$PhysicalActivity_Yes == 1, "Yes", "No")
+data$Asthma <- ifelse(data$Asthma_Yes == 1, "Yes", "No")
+data$KidneyDisease <- ifelse(data$KidneyDisease_Yes == 1, "Yes", "No")
+data$SkinCancer <- ifelse(data$SkinCancer_Yes == 1, "Yes", "No")
+
+# Check if 'HeartDisease' is present in the dataframe
+glimpse(data)
+
+# --- Check for Missing or Infinite Values ---
+# Use summaries across to simplify missing and infinite values check
+data_check <- data %>% summarise(across(everything(), list(na = ~sum(is.na(.)), inf = ~sum(is.infinite(.)))))
+print(data_check)
+
+# --- Model Building ---
+# Fit a logistic regression model using all predictors
+full_model <- glm(HeartDiseaseNumeric ~ ., data = data, family = "binomial")
+
+# Display summary of the model
+print(summary(full_model))
+
+# --- Coefficient Analysis ---
+# Streamline coefficient processing using dplyr and stringr
+coefficients <- tidy(full_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = case_when(
+    str_detect(term, "Sex_Male") ~ "Male",
+    str_detect(term, "Sex_Female") ~ "Female",
+    TRUE ~ term
+  ))
+
+# --- Plotting ---
+# Function for plotting histograms or bar plots depending on the data type
+plot_histogram <- function(data, variable, title) {
+  # Check if the variable exists in the data
+  if (!variable %in% names(data)) {
+    stop(paste("The variable", variable, "is not found in the dataframe"))
+  }
+  
+  # Check if the variable is numeric or categorical
+  if (is.numeric(data[[variable]])) {
+    # Plot histogram for numeric variables
+    p <- ggplot(data, aes_string(x = variable)) +
+      geom_histogram(bins = 30, fill = "darkorchid3", color = "white") +
+      labs(x = title, y = "Count") +
+      theme_minimal()
+  } else {
+    # Plot bar plot for categorical variables
+    p <- ggplot(data, aes_string(x = variable, fill = variable)) +
+      geom_bar() +
+      labs(x = title, y = "Count") +
+      theme_minimal() +
+      scale_fill_viridis_d(begin = 0.3, end = 0.9, direction = 1, option = "C") +
+      theme(axis.text.x = element_text(angle = 65, hjust = 1))
+  }
+  
+  print(p)
+}
+
+# Apply the function to plot histograms for different attributes
+plot_histogram(data, "AgeCategory", "Age Category")
+plot_histogram(data, "Sex", "Sex")
+plot_histogram(data, "Race", "Race")
+plot_histogram(data, "GenHealth", "General Health")
+
+# List of other predictors
+other_predictors <- c("BMI", "Smoking", "AlcoholDrinking", "Stroke", "PhysicalHealth", 
+                      "MentalHealth", "DiffWalking", "Diabetic", "PhysicalActivity", 
+                      "SleepTime", "Asthma", "KidneyDisease", "SkinCancer")
+
+# Apply the histogram plot function to each of the predictors
+for(predictor in other_predictors) {
+  if(predictor %in% colnames(data)) {
+    plot_histogram(data, predictor, predictor)
+  } else {
+    warning(paste("The variable", predictor, "is not found in the dataframe. Skipping."))
+  }
+}
+
+# --- Descriptive Statistics and Exploratory Graphs ---
+# List of packages
+required_packages <- c("ggplot2", "reshape2", "dplyr","car", "MASS", "GGally", "scales", "stargazer")
+
+# Install any missing packages
+new_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+# Load libraries
+lapply(required_packages, require, character.only = TRUE)
+
+# --- Histogram Function ---
+plot_histogram <- function(data, variable, title) {
+  if (!variable %in% names(data)) {
+    stop(paste("The variable", variable, "is not found in the dataframe"))
+  }
+  if (is.numeric(data[[variable]])) {
+    p <- ggplot(data, aes_string(x = variable)) +
+      geom_histogram(bins = 30, fill = "darkorchid3", color = "white") +
+      labs(x = title, y = "Count", title = paste("Histogram of", title)) +
+      theme_light() +
+      geom_vline(aes(xintercept = mean(get(variable), na.rm = TRUE)), color = "darkorange", linetype = "dashed", size = 1)
+  } else {
+    p <- ggplot(data, aes_string(x = variable, fill = variable)) +
+      geom_bar() +
+      labs(x = title, y = "Count", title = paste("Bar Plot of", title)) +
+      theme_light() +
+      scale_fill_viridis_d()
+  }
+  print(p)
+}
+
+# --- Data Cleaning ---
+# Impute missing values for BMI with mean
+data$BMI <- ifelse(is.na(data$BMI), mean(data$BMI, na.rm = TRUE), data$BMI)
+
+# Convert categorical variables to factors
+data$Sex <- as.factor(data$Sex)
+data$Race <- as.factor(data$Race)
+data$GenHealth <- as.factor(data$GenHealth)
+data$AgeCategory <- as.factor(data$AgeCategory)
+
+# --- Transformations ---
+# Apply log transformation to BMI
+data$BMI_log <- log(data$BMI + 1)  
+
+# --- Exploratory Data Analysis ---
+# Descriptive Statistics for Numeric Variables
+summary_statistics <- data %>% summarise(across(where(is.numeric), 
+                                                list(mean = mean, sd = sd, median = median, min = min, max = max)))
+print(summary_statistics)
+
+# Exploratory Graphs for Categorical Variables
+# Heart Disease by Age and Sex
+ggplot(data, aes(x = AgeCategory, y = HeartDiseaseNumeric, fill = Sex)) +
+  geom_bar(stat = "summary", fun = "mean") +
+  theme_minimal() +
+  labs(title = "Heart Disease by Age and Sex", x = "Age Category", y = "Proportion with Heart Disease")
+
+# --- Correlation Heatmap ---
+# Increase default plot size
+options(repr.plot.width=15, repr.plot.height=15)
+
+# Generate the correlation matrix
+numeric_data <- dplyr::select(data, where(is.numeric))
+correlation_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Prepare the data for plotting
+melted_correlation_matrix <- melt(correlation_matrix)
+
+# Calculate the size of text for the plot dynamically based on the number of variables
+num_vars <- length(correlation_matrix[,1])
+text_size <- max(2, 10 / log(num_vars))
+
+# Define the height of the plot dynamically based on the number of variables
+plot_height <- max(10, num_vars / 3)
+
+# Plotting with readability
+p <- ggplot(data = melted_correlation_matrix, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "darkorchid3", high = "darkorange", mid = "white", midpoint = 0, limit = c(-1, 1), name="Correlation") +
+  theme_minimal() +
+  labs(title = "Correlation Matrix of Numeric Predictors", x = "", y = "") +
+  geom_text(aes(label = sprintf("%.2f", value)), check_overlap = TRUE, color = "black", size = text_size) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = text_size),
+        axis.text.y = element_text(size = text_size),
+        legend.position = "right")
+
+# Render the plot in the R
+print(p)
+
+# --- Regression Modeling ---
+# Define control variables
+control_variables <- c("AgeCategory", "Sex", "Race", "GenHealth")
+
+# Define independent variables of interest
+independent_variables <- c("BMI_log", "Smoking", "AlcoholDrinking", "Stroke", "PhysicalHealth", 
+                           "MentalHealth", "DiffWalking", "Diabetic", "PhysicalActivity", 
+                           "SleepTime", "Asthma", "KidneyDisease", "SkinCancer")
+
+# Model 1: Heart Disease with only control variables
+control_formula <- as.formula(paste("HeartDiseaseNumeric ~", paste(control_variables, collapse = " + ")))
+model_control <- glm(control_formula, data = data, family = "binomial")
+summary(model_control)
+
+# Model 2: Heart Disease with control variables and independent variables
+full_formula <- as.formula(paste("HeartDiseaseNumeric ~", paste(c(control_variables, independent_variables), collapse = " + ")))
+model_full <- glm(full_formula, data = data, family = "binomial")
+summary(model_full)
+
+# Check for overdispersion
+if (summary(model_full)$dispersion > 1) {
+  model_full <- glm.nb(HeartDiseaseNumeric ~ ., data = data %>% select(all_of(c(control_variables, independent_variables)), HeartDiseaseNumeric))
+}
+
+# Model Diagnostics: Check for multicollinearity
+vif(model_full)
+
+# --- Model Comparison ---
+# Compare the two models
+anova_result <- anova(model_control, model_full, test = "Chisq")
+print(anova_result)
+
+# --- Goodness of Fit ---
+cat("Model 1 (Control Variables) AIC: ", AIC(model_control), "\n")
+cat("Model 2 (Full Model) AIC: ", AIC(model_full), "\n")
+
+# --- Model Reporting ---
+# Stargazer for model reporting
+stargazer(model_control, model_full, type = "text")
+
+# --- Plot Diagnostics ---
+# Close any existing graphic devices
+#while(dev.cur() > 1) dev.off()
+
+# Run model diagnostics plots using base R graphics
+# Open a new device if you're not using RStudio or if dev.new() works with your setup
+# dev.new(width = 10, height = 10)
+par(mfrow=c(2,2))
+plot(model_full)
+
+# Now close the base graphics device
+#dev.off()  # Only run this if you ran dev.new()
+
+fitted_values <- fitted(model_full)
+residuals <- resid(model_full)
+
+# Residuals vs Fitted plot
+p1 <- ggplot() +
+  geom_point(aes(x = fitted_values, y = residuals)) +
+  geom_smooth(aes(x = fitted_values, y = residuals), method = "loess", color = "darkorange", 
+              linetype = "dashed", se = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#800080", size = 1.5) +
+  labs(x = "Predicted values", y = "Residuals") +
+  theme_minimal()
+
+# QQ plot
+qq <- qqnorm(residuals, plot.it = FALSE)
+p2 <- ggplot() +
+  geom_point(aes(x = qq$x, y = qq$y)) +
+  geom_abline(slope = 1, intercept = 0, color = "darkorange", size = 1.5) +
+  labs(x = "Theoretical Quantiles", y = "Standardized residuals") +
+  theme_minimal()
+
+# Scale-Location plot
+p3 <- ggplot() +
+  geom_point(aes(x = fitted_values, y = sqrt(abs(residuals)))) +
+  geom_smooth(aes(x = fitted_values, y = sqrt(abs(residuals))), method = "loess", color = "darkorange", 
+              linetype = "dashed", se = FALSE) +
+  labs(x = "Predicted values", y = "Sqrt(|Standardized residuals|)") +
+  theme_minimal()
+
+# Residuals vs Leverage plot
+influence_measures <- influence(model_full)
+leverage <- influence_measures$hat
+cooks_distance <- influence_measures$cooks.distance
+
+p4 <- ggplot() +
+  geom_point(aes(x = leverage, y = residuals)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#800080", size = 1.5)
